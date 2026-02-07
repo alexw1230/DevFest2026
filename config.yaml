@@ -1,0 +1,9 @@
+# Configuration for YOLOv8 RPG View
+# smoothing_alpha: EMA alpha for smoothing HP/Mana (0.0 - 1.0)
+# ref_distance: reference distance in meters used for HP scaling
+
+smoothing_alpha: 0.6
+ref_distance: 2.0
+hp_scale: 1.0
+pending_timeout: 2.5
+person_timeout: 30.0

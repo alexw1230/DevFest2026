@@ -1,125 +1,213 @@
+import argparse
+import os
 import cv2
 import numpy as np
 from ultralytics import YOLO
 
-# =================== Models ===================
-# Models and VideoCapture are initialized inside main() to avoid
-# running side-effects on import (cleaner for testing/importing).
+try:
+    import yaml
+except Exception:
+    yaml = None
 
 # =================== Constants ===================
 KNOWN_HEIGHT = 1.7  # meters (average person)
-FOCAL_LENGTH = 700  # tune based on your camera
+FOCAL_LENGTH = 400  # tune based on your camera
 MAX_HP = 100
 MAX_MANA = 100
-THREAT_THRESHOLD = 120  # size_factor threshold for threat
+THREAT_THRESHOLD = 0.6  # ratio threshold (upper_height / expected_px_at_ref_distance)
 PROXIMITY_THRESHOLD = 50  # pixels, for matching old track
+SMOOTHING_ALPHA = 0.6  # EMA weight for new measurements (0..1)
 
 # =================== Persistent attributes ===================
-# track_id -> {'hp': HP, 'mana': Mana, 'bbox': (x1,y1,x2,y2)}
+# track_id -> {'hp': HP, 'mana': Mana, 'bbox': (x1,y1,x2,y2), 'upper_bbox': (...)}
 person_attributes = {}
 
-# =================== Helper functions ===================
-def estimate_distance(bbox_height_px):
-    if bbox_height_px == 0:
-        return None
-    return (KNOWN_HEIGHT * FOCAL_LENGTH) / bbox_height_px
 
-def dominant_color(img):
-    img = img.reshape((-1, 3))
-    img = np.float32(img)
+# =================== Helper functions ===================
+def estimate_distance(bbox_height_px: int) -> float | None:
+    """Estimate distance (meters) from pixel height using a pinhole camera model."""
+    if bbox_height_px <= 0:
+        return None
+    return (KNOWN_HEIGHT * FOCAL_LENGTH) / float(bbox_height_px)
+
+
+def dominant_color(img: np.ndarray) -> tuple[int, int, int]:
+    """Return the dominant color (BGR) of an image region using k-means (k=1)."""
+    if img is None or img.size == 0:
+        return (0, 0, 0)
+
+    data = img.reshape((-1, 3)).astype(np.float32)
+    # kmeans to find dominant color
     _, _, centers = cv2.kmeans(
-        img, 1, None,
+        data, 1, None,
         (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0),
-        10, cv2.KMEANS_RANDOM_CENTERS
+        10, cv2.KMEANS_RANDOM_CENTERS,
     )
     return tuple(map(int, centers[0]))
 
-def color_to_mana(rgb):
-    r, g, b = rgb
-    brightness = (0.299*r + 0.587*g + 0.114*b)
-    mana = int((brightness / 255) * MAX_MANA)
-    return mana
 
-def size_to_hp(bbox_height, distance):
-    if distance is None or bbox_height == 0:
+def color_to_mana(rgb: tuple[int, int, int]) -> int:
+    """Map an RGB/BGR color to a mana value (simple brightness -> mana)."""
+    r, g, b = rgb
+    brightness = (0.299 * r + 0.587 * g + 0.114 * b)
+    mana = int((brightness / 255.0) * MAX_MANA)
+    return max(0, min(mana, MAX_MANA))
+
+
+def size_to_hp(bbox_height: int, distance: float, ref_distance: float = 2.0, scale: float = 1.0) -> int:
+    """Compute HP from bounding-box height using a reference-distance normalization.
+
+    Args:
+        bbox_height: observed pixel height (upper-body)
+        distance: estimated distance in meters (unused for default method but kept for API)
+        ref_distance: reference distance in meters used for normalization
+        scale: multiplicative scale to calibrate HP output (tunable via config)
+
+    Returns:
+        int HP value between 0 and MAX_HP
+    """
+    if distance is None or bbox_height <= 0:
         return 0
-    size_factor = bbox_height / distance
-    max_size_factor = 300  # adjust for camera/scene
-    hp = int(min(size_factor / max_size_factor * MAX_HP, MAX_HP))
+
+    # Expected pixel height of a person at the reference distance
+    expected_px = (KNOWN_HEIGHT * FOCAL_LENGTH) / ref_distance
+    if expected_px <= 0:
+        return 0
+
+    ratio = float(bbox_height) / float(expected_px)
+    hp = int(min(max(ratio * MAX_HP * float(scale), 0), MAX_HP))
     return hp
 
-def get_persistent_attributes(track_id, bbox, attributes_dict, threshold=PROXIMITY_THRESHOLD):
-    """
-    Returns existing HP/Mana if track_id exists,
-    or finds the closest previous bbox within threshold to reuse attributes.
-    """
-    if track_id in attributes_dict:
-        return (attributes_dict[track_id]['hp'], attributes_dict[track_id]['mana']), track_id
 
+def expected_pixel_height(distance: float) -> float:
+    """Return expected pixel height for a person at given distance (meters)."""
+    if distance is None or distance <= 0:
+        return 0.0
+    return (KNOWN_HEIGHT * FOCAL_LENGTH) / float(distance)
+
+
+def get_persistent_attributes(track_id, bbox, attributes_dict, threshold=PROXIMITY_THRESHOLD):
+    """Return existing (hp,mana) for a track or match a previous entry.
+
+    Matching strategy:
+    1. If `track_id` exists, return it.
+    2. Try IoU-based matching with previous bboxes (preferred).
+    3. Fall back to proximity (centroid distance) matching within `threshold`.
+    """
+    def bbox_iou(a, b):
+        # a and b are (x1,y1,x2,y2)
+        ax1, ay1, ax2, ay2 = a
+        bx1, by1, bx2, by2 = b
+        ix1 = max(ax1, bx1)
+        iy1 = max(ay1, by1)
+        ix2 = min(ax2, bx2)
+        iy2 = min(ay2, by2)
+        iw = max(0, ix2 - ix1)
+        ih = max(0, iy2 - iy1)
+        inter = iw * ih
+        area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+        area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+        union = area_a + area_b - inter
+        return (inter / union) if union > 0 else 0.0
+
+    # Exact track id match
+    if track_id in attributes_dict:
+        data = attributes_dict[track_id]
+        return (data['hp'], data['mana']), track_id
+
+    # IoU matching (preferred) to handle re-detections when track ids change
+    best_iou = 0.0
+    best_id = None
+    for old_id, data in attributes_dict.items():
+        prev_bbox = data.get('bbox')
+        if not prev_bbox:
+            continue
+        iou = bbox_iou(prev_bbox, bbox)
+        if iou > best_iou:
+            best_iou = iou
+            best_id = old_id
+
+    # If IoU is sufficiently high, consider it the same person
+    if best_iou > 0.3 and best_id is not None:
+        data = attributes_dict[best_id]
+        return (data['hp'], data['mana']), best_id
+
+    # Fallback: proximity (centroid distance)
     cx = (bbox[0] + bbox[2]) // 2
     cy = (bbox[1] + bbox[3]) // 2
-
-    # Check for previous bbox within threshold
     for old_id, data in attributes_dict.items():
-        ox1, oy1, ox2, oy2 = data['bbox']
+        ox1, oy1, ox2, oy2 = data.get('bbox', (0, 0, 0, 0))
         ox = (ox1 + ox2) // 2
         oy = (oy1 + oy2) // 2
-        distance = ((cx - ox)**2 + (cy - oy)**2)**0.5
-        if distance < threshold:
+        dist = ((cx - ox) ** 2 + (cy - oy) ** 2) ** 0.5
+        if dist < threshold:
             return (data['hp'], data['mana']), old_id
 
     return None, track_id
 
-def draw_health_bars(frame, x, y, hp, mana, max_hp=MAX_HP, max_mana=MAX_MANA):
-    """Draw RPG-style health and mana bars."""
+
+def draw_health_bars(frame: np.ndarray, x: int, y: int, hp: int, mana: int, max_hp=MAX_HP, max_mana=MAX_MANA):
+    """Draw RPG-style health and mana bars at (x,y) top-left of panel."""
     bar_width = 150
     bar_height = 20
     spacing = 5
     outline_thickness = 2
-    
-    # Background panel
+
     panel_height = bar_height * 2 + spacing * 3
     panel_width = bar_width + 30
+
+    # Panel background and border
     cv2.rectangle(frame, (x - 10, y - 10), (x + panel_width, y + panel_height), (20, 20, 20), -1)
     cv2.rectangle(frame, (x - 10, y - 10), (x + panel_width, y + panel_height), (100, 100, 100), outline_thickness)
-    
-    # HP Bar
-    hp_ratio = max(0, min(hp / max_hp, 1.0))
+
+    # HP
+    hp_ratio = max(0.0, min(float(hp) / float(max_hp), 1.0))
     hp_bar_width = int(bar_width * hp_ratio)
-    
-    # HP background (dark red)
     cv2.rectangle(frame, (x + 5, y + 5), (x + bar_width + 5, y + bar_height + 5), (50, 50, 100), -1)
-    # HP fill (bright red)
     cv2.rectangle(frame, (x + 5, y + 5), (x + 5 + hp_bar_width, y + bar_height + 5), (0, 0, 255), -1)
-    # HP border
     cv2.rectangle(frame, (x + 5, y + 5), (x + bar_width + 5, y + bar_height + 5), (150, 150, 150), outline_thickness)
-    
-    # HP text
-    cv2.putText(frame, f"HP {hp}/{max_hp}", (x + 10, y + 18),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
-    
-    # Mana Bar
-    mana_ratio = max(0, min(mana / max_mana, 1.0))
+    cv2.putText(frame, f"HP {hp}/{max_hp}", (x + 10, y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+
+    # Mana
+    mana_ratio = max(0.0, min(float(mana) / float(max_mana), 1.0))
     mana_bar_width = int(bar_width * mana_ratio)
-    
-    # Mana background (dark blue)
-    cv2.rectangle(frame, (x + 5, y + bar_height + spacing + 5), 
-                  (x + bar_width + 5, y + bar_height * 2 + spacing + 5), (100, 50, 50), -1)
-    # Mana fill (bright blue)
-    cv2.rectangle(frame, (x + 5, y + bar_height + spacing + 5), 
-                  (x + 5 + mana_bar_width, y + bar_height * 2 + spacing + 5), (255, 0, 0), -1)
-    # Mana border
-    cv2.rectangle(frame, (x + 5, y + bar_height + spacing + 5), 
-                  (x + bar_width + 5, y + bar_height * 2 + spacing + 5), (150, 150, 150), outline_thickness)
-    
-    # Mana text
-    cv2.putText(frame, f"Mana {mana}/{max_mana}", (x + 10, y + bar_height * 2 + spacing),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+    cv2.rectangle(frame, (x + 5, y + bar_height + spacing + 5), (x + bar_width + 5, y + bar_height * 2 + spacing + 5), (100, 50, 50), -1)
+    cv2.rectangle(frame, (x + 5, y + bar_height + spacing + 5), (x + 5 + mana_bar_width, y + bar_height * 2 + spacing + 5), (255, 0, 0), -1)
+    cv2.rectangle(frame, (x + 5, y + bar_height + spacing + 5), (x + bar_width + 5, y + bar_height * 2 + spacing + 5), (150, 150, 150), outline_thickness)
+    cv2.putText(frame, f"Mana {mana}/{max_mana}", (x + 10, y + bar_height * 2 + spacing), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+
 
 def main():
     """Initialize models, camera and run the detection loop."""
-    det_model = YOLO("models/yolov8n.pt")        # detection + tracking
-    pose_model = YOLO("models/yolov8n-pose.pt")  # optional, for pose info
+    parser = argparse.ArgumentParser(description='YOLOv8 RPG View')
+    parser.add_argument('--config', type=str, default='config.yaml', help='Path to config YAML')
+    parser.add_argument('--alpha', type=float, default=None, help='Smoothing alpha (overrides config)')
+    args = parser.parse_args()
+
+    # Load config if available
+    cfg = {}
+    if args.config and os.path.exists(args.config):
+        if yaml is None:
+            print('Warning: PyYAML not installed; skipping config load')
+        else:
+            try:
+                with open(args.config, 'r') as f:
+                    cfg = yaml.safe_load(f) or {}
+            except Exception as e:
+                print(f'Warning: failed to read config {args.config}: {e}')
+
+    # Determine smoothing alpha (CLI overrides config)
+    smoothing_alpha = float(cfg.get('smoothing_alpha', SMOOTHING_ALPHA))
+    if args.alpha is not None:
+        smoothing_alpha = float(args.alpha)
+
+    # Reference distance and HP scale for calibration (can be configured)
+    ref_distance_cfg = float(cfg.get('ref_distance', 2.0))
+    hp_scale = float(cfg.get('hp_scale', 1.0))
+    pending_timeout = float(cfg.get('pending_timeout', 2.5))
+    person_timeout = float(cfg.get('person_timeout', 30.0))
+
+    det_model = YOLO("models/yolov8n.pt")
 
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -130,20 +218,19 @@ def main():
     cv2.namedWindow("YOLOv8 RPG View", cv2.WINDOW_NORMAL)
     cv2.setWindowProperty("YOLOv8 RPG View", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
+    import time
+
+    # pending_seen stores detections that haven't been assigned attributes yet:
+    # matched_id -> {'first_seen': timestamp, 'last_seen': timestamp, 'bbox': (x1,y1,x2,y2)}
+    pending_seen: dict = {}
+
     try:
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
 
-            # Run detection + tracking
-            results = det_model.track(
-                frame,
-                persist=True,
-                classes=[0],  # only people
-                conf=0.4,
-                tracker="bytetrack.yaml"
-            )
+            results = det_model.track(frame, persist=True, classes=[0], conf=0.4, tracker="bytetrack.yaml")
 
             for r in results:
                 if r.boxes.id is None:
@@ -151,40 +238,147 @@ def main():
 
                 for box, track_id in zip(r.boxes, r.boxes.id):
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    bbox_height = y2 - y1
-                    distance = estimate_distance(bbox_height)
+
+                    # Use upper portion for color/distance/HP
+                    full_height = max(1, y2 - y1)
+                    upper_y2 = y1 + int(full_height * 0.6)
+                    upper_height = max(1, upper_y2 - y1)
+
+                    distance = estimate_distance(upper_height)
                     if distance is None:
                         continue
 
-                    # Persistent HP/Mana
                     attr, matched_id = get_persistent_attributes(track_id, (x1, y1, x2, y2), person_attributes)
+
+                    now = time.time()
+
+                    # initialize hp/mana to safe defaults; they will be set when assigned
+                    hp = None
+                    mana = None
+
+                    # If we have previous attributes, reuse them and update bbox
                     if attr:
                         hp, mana = attr
+                        # update bbox, upper_bbox and last_seen timestamp
+                        person_attributes[matched_id].update({
+                            'bbox': (x1, y1, x2, y2),
+                            'upper_bbox': (x1, y1, x2, upper_y2),
+                            'last_seen': now,
+                        })
                     else:
-                        person_crop = frame[y1:y2, x1:x2]
-                        if person_crop.size == 0:
-                            continue
-                        h = person_crop.shape[0]
-                        upper = person_crop[:h//2, :]
-                        upper_color = dominant_color(upper)
+                        # Try to match this detection to an existing pending entry (handles tracker id changes)
+                        key_id = matched_id
+                        # compute IoU helper
+                        def _iou(a, b):
+                            ax1, ay1, ax2, ay2 = a
+                            bx1, by1, bx2, by2 = b
+                            ix1 = max(ax1, bx1)
+                            iy1 = max(ay1, by1)
+                            ix2 = min(ax2, bx2)
+                            iy2 = min(ay2, by2)
+                            iw = max(0, ix2 - ix1)
+                            ih = max(0, iy2 - iy1)
+                            inter = iw * ih
+                            area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+                            area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+                            union = area_a + area_b - inter
+                            return (inter / union) if union > 0 else 0.0
 
-                        hp = size_to_hp(bbox_height, distance)
-                        mana = color_to_mana(upper_color)
+                        best_iou = 0.0
+                        best_pending = None
+                        for pid, pinfo in pending_seen.items():
+                            pbbox = pinfo.get('bbox')
+                            if not pbbox:
+                                continue
+                            iou = _iou(pbbox, (x1, y1, x2, y2))
+                            if iou > best_iou:
+                                best_iou = iou
+                                best_pending = pid
 
-                    # Update attributes
-                    person_attributes[matched_id] = {'hp': hp, 'mana': mana, 'bbox': (x1, y1, x2, y2)}
+                        if best_iou > 0.3 and best_pending is not None:
+                            key_id = best_pending
+                        else:
+                            # fallback: centroid proximity to any pending bbox
+                            cx = (x1 + x2) // 2
+                            cy = (y1 + y2) // 2
+                            for pid, pinfo in pending_seen.items():
+                                ox1, oy1, ox2, oy2 = pinfo.get('bbox', (0, 0, 0, 0))
+                                ox = (ox1 + ox2) // 2
+                                oy = (oy1 + oy2) // 2
+                                dist = ((cx - ox) ** 2 + (cy - oy) ** 2) ** 0.5
+                                if dist < PROXIMITY_THRESHOLD:
+                                    key_id = pid
+                                    break
 
-                    # Threat logic and drawing
-                    size_factor = bbox_height / distance
-                    threat = size_factor > THREAT_THRESHOLD
+                        # Track pending visibility duration using the matched key
+                        info = pending_seen.get(key_id)
+                        if info is None:
+                            # start pending timer
+                            pending_seen[key_id] = {'first_seen': now, 'last_seen': now, 'bbox': (x1, y1, x2, y2)}
+                        else:
+                            info['last_seen'] = now
+                            info['bbox'] = (x1, y1, x2, y2)
+
+                        # Only assign attributes after the person has been visible for >= pending_timeout
+                        visible_time = now - pending_seen[key_id]['first_seen']
+                        if visible_time >= pending_timeout:
+                            person_upper_crop = frame[y1:upper_y2, x1:x2]
+                            if person_upper_crop is None or person_upper_crop.size == 0:
+                                # can't measure now; continue and wait for next frame
+                                continue
+                            upper_color = dominant_color(person_upper_crop)
+                            hp = size_to_hp(upper_height, distance, ref_distance=ref_distance_cfg, scale=hp_scale)
+                            mana = color_to_mana(upper_color)
+
+                            person_attributes[key_id] = {
+                                'hp': hp,
+                                'mana': mana,
+                                'bbox': (x1, y1, x2, y2),
+                                'upper_bbox': (x1, y1, x2, upper_y2),
+                                'first_seen': pending_seen[key_id]['first_seen'],
+                                'assigned_at': now,
+                                'last_seen': now,
+                            }
+                            # no longer pending
+                            pending_seen.pop(key_id, None)
+
+                    # Threat logic using normalized size ratio vs reference distance
+                    # Compute expected pixel height at reference distance and compare
+                    ref_distance = 2.0
+                    expected_px_ref = expected_pixel_height(ref_distance)
+                    size_ratio = float(upper_height) / float(expected_px_ref) if expected_px_ref > 0 else 0.0
+                    threat = size_ratio > THREAT_THRESHOLD
                     box_color = (0, 0, 255) if threat else (0, 255, 0)
 
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+                    # Draw bounding box (use different color if still pending)
+                    if matched_id in person_attributes:
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+                        # Draw health/mana bars using stored attributes (ensure display even if local vars are None)
+                        stored = person_attributes.get(matched_id)
+                        if stored is not None:
+                            disp_hp = int(stored.get('hp', 0))
+                            disp_mana = int(stored.get('mana', 0))
+                            bar_x = (x1 + x2) // 2 - 75
+                            bar_y = max(10, y1 - 70)
+                            draw_health_bars(frame, bar_x, bar_y, disp_hp, disp_mana)
+                    else:
+                        # pending detection (not yet assigned) - draw gray box
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (200, 200, 200), 2)
 
-                    # Draw RPG-style health and mana bars above the person
-                    bar_x = (x1 + x2) // 2 - 75  # Center horizontally (bar_width/2 = 75)
-                    bar_y = max(10, y1 - 70)  # Above the person, with safety margin
-                    draw_health_bars(frame, bar_x, bar_y, hp, mana)
+            # Cleanup pending_seen entries that haven't been updated recently
+            stale_pending = [pid for pid, info in pending_seen.items() if (time.time() - info.get('last_seen', info.get('first_seen', 0))) > pending_timeout]
+            for pid in stale_pending:
+                pending_seen.pop(pid, None)
+
+            # Cleanup person_attributes entries that haven't been seen recently
+            stale_persons = []
+            now_cleanup = time.time()
+            for pid, data in list(person_attributes.items()):
+                last = data.get('last_seen', data.get('assigned_at', now_cleanup))
+                if (now_cleanup - last) > person_timeout:
+                    stale_persons.append(pid)
+            for pid in stale_persons:
+                person_attributes.pop(pid, None)
 
             cv2.imshow("YOLOv8 RPG View", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
