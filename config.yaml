@@ -1,9 +1,24 @@
 # Configuration for YOLOv8 RPG View
-# smoothing_alpha: EMA alpha for smoothing HP/Mana (0.0 - 1.0)
-# ref_distance: reference distance in meters used for HP scaling
-
+# smoothing_alpha: EMA alpha (0.0 - 1.0). If set, new measurements are blended
+# with previous stored values to reduce jitter. Higher values favor new
+# measurements (less smoothing). Set to 1.0 to disable smoothing.
 smoothing_alpha: 0.6
+
+# ref_distance: Reference distance in meters used when normalizing pixel
+# heights to compute HP. The code computes expected pixel height at this
+# distance and scales observed upper-body pixel height relative to it.
 ref_distance: 2.0
+
+# hp_scale: Calibration multiplier for HP output. Increase to raise computed
+# HP values across the board; useful if bars look too low/large for your
+# camera/resolution.
 hp_scale: 1.0
+
+# pending_timeout: Seconds a detection must remain visible (continuous)
+# before its HP/Mana are committed. While pending, a gray box and
+# provisional bars/countdown are shown.
 pending_timeout: 2.5
+
+# person_timeout: Seconds after last-seen to forget a person and free their
+# slot. Increase to keep persons persisted longer.
 person_timeout: 30.0

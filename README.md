@@ -96,10 +96,67 @@ Or adjust color detection ranges by modifying the `color_ranges` dictionary.
 
 **Slow performance**: 
 - Use a smaller model or reduce frame resolution
-- Check your system's GPU availability
-- Close other resource-intensive applications
+## YOLOv8 Person Detection with RPG-style HP/Mana Overlay
 
-**Color detection not working**:
-- Ensure adequate lighting
-- Adjust HSV color ranges in the code
-- Wear clothing with more saturated colors
+Real-time webcam app that detects people, analyzes their upper-body clothing color, and assigns simple RPG-style HP and Mana values which are displayed as bars above each person.
+
+## Features
+
+- Real-time person detection using YOLOv8 (Ultralytics)
+- Upper-body color analysis (dominant color) → Mana mapping
+- HP derived from size (reference-distance normalization)
+- Pending assignment: a person must be visible for `pending_timeout` seconds before HP/Mana are committed
+- Persistent per-person attributes across short occlusions (IoU/proximity matching)
+
+## Installation
+
+1. Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+2. Download or ensure the YOLO model exists at `models/yolov8n.pt` (first run will auto-download)
+
+## Usage
+
+Run the main pose/detection script:
+
+```bash
+python src/main_pose.py
+```
+
+- Press `q` to quit.
+
+## Configuration
+
+The application reads `config.yaml` by default. Key options:
+
+- `smoothing_alpha`: EMA alpha for smoothing HP/Mana (0.0 - 1.0). Higher favors new measurements.
+- `ref_distance`: Reference distance in meters used for HP scaling (default 2.0)
+- `hp_scale`: Multiplicative calibration for HP values
+- `pending_timeout`: Seconds a detection must remain visible before assignment (default 2.5)
+- `person_timeout`: Seconds after last seen to forget a person (default 30)
+
+Example `config.yaml` is included in the repo.
+
+## Requirements
+
+- Python 3.8+
+- Dependencies (in `requirements.txt`): `ultralytics`, `opencv-python`, `numpy`, `PyYAML`, `torch` (install matches your platform/CUDA if desired)
+
+## How It Works (brief)
+
+1. YOLOv8 detects people and provides tracked boxes.
+2. For unmatched detections, the app starts a pending timer (configured by `pending_timeout`).
+3. While pending, a gray box and provisional bars/countdown are shown.
+4. After the timeout, the upper-body region is analyzed for dominant color and size; HP and Mana are computed and committed.
+5. Committed HP/Mana are displayed above the person and persisted until the person is forgotten (`person_timeout`).
+
+## Troubleshooting & Tips
+
+- If HP values are too small/large, tweak `hp_scale` in `config.yaml`.
+- Increase `pending_timeout` if people move quickly and you get mistaken assignments.
+- Ensure good lighting for reliable color detection.
+
+If you want, I can add an example command to run with a custom config or adjust the default `pending_timeout` for faster assignment.
