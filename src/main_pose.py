@@ -131,9 +131,9 @@ while cap.isOpened():
 
             # Draw RPG-style attributes
             cv2.putText(frame, f"HP: {hp}", (x2 + 10, y1 + 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-            cv2.putText(frame, f"Mana: {mana}", (x2 + 10, y1 + 45),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            cv2.putText(frame, f"Mana: {mana}", (x2 + 10, y1 + 45),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
     cv2.imshow("YOLOv8 RPG View", frame)
     if cv2.waitKey(1) & 0xFF == ord('q'):
