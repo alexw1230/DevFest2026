@@ -236,12 +236,20 @@ def get_persistent_attributes(track_id, bbox, attributes_dict, threshold=PROXIMI
     return None, track_id
 
 
-def draw_health_bars(frame: np.ndarray, x: int, y: int, hp: int, mana: int, max_hp=MAX_HP, max_mana=MAX_MANA):
-    """Draw RPG-style health and mana bars at (x,y) top-left of panel."""
-    bar_width = 150
-    bar_height = 20
+def draw_health_bars(frame: np.ndarray, x: int, y: int, hp: int, mana: int, max_hp=MAX_HP, max_mana=MAX_MANA, scale: float = 1.0):
+    """Draw RPG-style health and mana bars at (x,y) top-left of panel, scaled by `scale`.
+
+    `scale` is clamped so bars remain readable. Use `scale` in (0.5..1.0].
+    """
+    # Base sizes (when scale == 1.0)
+    base_bar_width = 150
+    base_bar_height = 20
     spacing = 5
-    outline_thickness = 2
+    outline_thickness = max(1, int(2 * scale))
+
+    # Apply scale but ensure minimum sizes
+    bar_width = max(40, int(base_bar_width * scale))
+    bar_height = max(8, int(base_bar_height * scale))
 
     panel_height = bar_height * 2 + spacing * 3
     panel_width = bar_width + 30
@@ -256,7 +264,9 @@ def draw_health_bars(frame: np.ndarray, x: int, y: int, hp: int, mana: int, max_
     cv2.rectangle(frame, (x + 5, y + 5), (x + bar_width + 5, y + bar_height + 5), (50, 50, 100), -1)
     cv2.rectangle(frame, (x + 5, y + 5), (x + 5 + hp_bar_width, y + bar_height + 5), (0, 0, 255), -1)
     cv2.rectangle(frame, (x + 5, y + 5), (x + bar_width + 5, y + bar_height + 5), (150, 150, 150), outline_thickness)
-    cv2.putText(frame, f"HP {hp}/{max_hp}", (x + 10, y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+
+    font_scale = max(0.3, 0.4 * scale)
+    cv2.putText(frame, f"HP {hp}/{max_hp}", (x + 10, y + 5 + int(bar_height * 0.9)), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), max(1, int(scale)))
 
     # Mana
     mana_ratio = max(0.0, min(float(mana) / float(max_mana), 1.0))
@@ -264,7 +274,7 @@ def draw_health_bars(frame: np.ndarray, x: int, y: int, hp: int, mana: int, max_
     cv2.rectangle(frame, (x + 5, y + bar_height + spacing + 5), (x + bar_width + 5, y + bar_height * 2 + spacing + 5), (100, 50, 50), -1)
     cv2.rectangle(frame, (x + 5, y + bar_height + spacing + 5), (x + 5 + mana_bar_width, y + bar_height * 2 + spacing + 5), (255, 0, 0), -1)
     cv2.rectangle(frame, (x + 5, y + bar_height + spacing + 5), (x + bar_width + 5, y + bar_height * 2 + spacing + 5), (150, 150, 150), outline_thickness)
-    cv2.putText(frame, f"Mana {mana}/{max_mana}", (x + 10, y + bar_height * 2 + spacing), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+    cv2.putText(frame, f"Mana {mana}/{max_mana}", (x + 10, y + bar_height * 2 + spacing + int(bar_height * 0.9)), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), max(1, int(scale)))
 
 
 def main():
@@ -454,14 +464,26 @@ def main():
                         if stored is not None:
                             disp_hp = int(stored.get('hp', 0))
                             disp_mana = int(stored.get('mana', 0))
-                            # Draw health/mana bars
-                            bar_x = (x1 + x2) // 2 - 75
-                            bar_y = max(10, y1 - 70)
-                            draw_health_bars(frame, bar_x, bar_y, disp_hp, disp_mana)
-                            # Draw job name above HP/Mana bars
-                            job_text = f"{job}"
-                            cv2.putText(frame, job_text, (x1 + 5, max(20, y1 - 90)), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, job_color, 2)
+                            # Compute scaling based on bbox height vs expected pixel height at ref distance
+                            expected_px_ref = expected_pixel_height(ref_distance_cfg)
+                            raw_scale = 1.0
+                            if expected_px_ref > 0:
+                                raw_scale = float(full_height) / float(expected_px_ref)
+                            # effective scale clamps to [0.5, 1.0]
+                            eff_scale = max(0.5, min(1.0, raw_scale))
+
+                            # Center the bars relative to bbox and scale positions
+                            bar_x = (x1 + x2) // 2 - int(75 * eff_scale)
+                            bar_y = max(10, y1 - int(70 * eff_scale))
+                            draw_health_bars(frame, bar_x, bar_y, disp_hp, disp_mana, scale=eff_scale)
+
+                            # Draw job name above HP/Mana bars only if raw_scale >= 0.5
+                            if raw_scale >= 0.5:
+                                job_text = f"{job}"
+                                font_scale = max(0.3, 0.6 * eff_scale)
+                                thickness = max(1, int(2 * eff_scale))
+                                cv2.putText(frame, job_text, (x1 + 5, max(20, y1 - int(90 * eff_scale))),
+                                           cv2.FONT_HERSHEY_SIMPLEX, font_scale, job_color, thickness)
                     else:
                         # pending detection (not yet assigned) - draw gray box
                         cv2.rectangle(frame, (x1, y1), (x2, y2), (200, 200, 200), 2)
