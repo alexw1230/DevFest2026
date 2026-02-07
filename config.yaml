@@ -22,3 +22,8 @@ pending_timeout: 2.5
 # person_timeout: Seconds after last-seen to forget a person and free their
 # slot. Increase to keep persons persisted longer.
 person_timeout: 30.0
+
+# min_bbox_height: Minimum bounding-box height in pixels to consider a
+# detection valid. Detections with a height smaller than this will be ignored
+# (useful to filter out noise and very small / distant detections).
+min_bbox_height: 100

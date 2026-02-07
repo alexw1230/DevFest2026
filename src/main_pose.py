@@ -296,6 +296,8 @@ def main():
     hp_scale = float(cfg.get('hp_scale', 1.0))
     pending_timeout = float(cfg.get('pending_timeout', 2.5))
     person_timeout = float(cfg.get('person_timeout', 30.0))
+    # Minimum bounding-box height (pixels) to consider for assignment/detection
+    min_bbox_height = int(cfg.get('min_bbox_height', 40))
 
     det_model = YOLO("models/yolov8n.pt")
 
@@ -331,6 +333,9 @@ def main():
 
                     # Use upper portion for color/distance/HP
                     full_height = max(1, y2 - y1)
+                    # Skip very small detections (likely noise or far away)
+                    if full_height < min_bbox_height:
+                        continue
                     upper_y2 = y1 + int(full_height * 0.6)
                     upper_height = max(1, upper_y2 - y1)
 
