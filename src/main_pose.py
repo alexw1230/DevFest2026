@@ -14,7 +14,7 @@ except Exception:
     yaml = None
 
 client = OpenAI(
-    api_key="APIKEY",
+    api_key="APIKEY", 
     base_url="https://api.featherless.ai/v1"
 )
 def encode_image_to_base64(image_path):
@@ -694,7 +694,8 @@ def main():
                         boss_title = f"Boss - {boss_job}"
                         boss_text_x = bx1 + 5
                         boss_text_y = max(20, by1 - int(90 * eff_scale))
-                        cv2.putText(frame, boss_title, (boss_text_x, boss_text_y), cv2.FONT_HERSHEY_SIMPLEX, max(0.4, 0.6 * eff_scale), (0, 215, 255), max(1, int(2 * eff_scale)))
+                        # Use a bold font for Boss label (thicker outline)
+                        cv2.putText(frame, boss_title, (boss_text_x, boss_text_y), cv2.FONT_HERSHEY_SIMPLEX, max(0.4, 0.6 * eff_scale), (0, 215, 255), max(3, int(3 * eff_scale)))
 
             # === NEW: PUBLISH REGIONS TO GLOBAL ===
             # Update the global list so the mouse callback sees the latest positions
