@@ -45,3 +45,22 @@ def check_quest_complete(image_path,quest):
     )
 
     return response.choices[0].message.content == "true"
+
+
+
+def split_into_three(s):
+    parts = s.split(",", 2)  # split on the first two commas only
+    if len(parts) < 3:
+        raise ValueError("Input string must contain at least two commas")
+    return parts[0], parts[1], parts[2]
+def resp(title,hp,mana):
+    prompt = f"Write a short 2-3 sentence description in the style of a fantasy rpg game. Here is the information you know about them: they are a {title}, hp={hp}, mana={mana}. Don’t use a name or a gender. Make the description expand on their title, even if you have to make stuff up for them. This short description will be used on the bottom of a character card. Also write a more detailed title for them. Your response should read: “{title}, Title, Description” separated by commas. Do not put anything else."
+    response = client.chat.completions.create(
+    model="meta-llama/Meta-Llama-3.1-8B-Instruct",
+    messages=[
+    {"role": "user", "content": prompt}
+    ]
+    )
+    return response.choices[0].message.content
+#Example use (title, hp, mana)
+#title, long_title, desc = split_into_three(resp("Mage", 35, 95))
