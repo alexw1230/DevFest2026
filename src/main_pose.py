@@ -17,7 +17,7 @@ except Exception:
     yaml = None
 
 client = OpenAI(
-    api_key="dumbass", 
+    api_key="rah rah rah ah ah ro ma ro ma ma", 
     base_url="https://api.featherless.ai/v1"
 )
 
