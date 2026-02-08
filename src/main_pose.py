@@ -2,6 +2,7 @@ import argparse
 import textwrap
 import os
 import random
+import time
 import cv2
 import numpy as np
 from ultralytics import YOLO
@@ -457,11 +458,9 @@ def main():
     # === QUEST LOG SYSTEM ===
     import random
     QUEST_POOL = [
-        "Talk to 3 new people",
         "Eat a snack",
         "Ask a mentor for help",
         "Take a group photo",
-        "Help another team",
         "Make a new friend"
         ]
     MAIN_QUEST = "Win the Hackathon"
@@ -851,7 +850,6 @@ def main():
             quest_log_regions.append((quest_box_x, side_quest_y1, quest_box_x + quest_box_w, side_quest_y2, 'side', sidequest))
 
             # Show quest result overlay if needed
-            import time
             if quest_result_overlay['show']:
                 elapsed = time.time() - quest_result_overlay['timestamp']
                 if elapsed < 3.0:
