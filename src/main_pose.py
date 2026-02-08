@@ -14,7 +14,7 @@ except Exception:
     yaml = None
 
 client = OpenAI(
-    api_key="APIKEY", #KEEP api_key="APIKEY"
+    api_key="APIKEY", 
     base_url="https://api.featherless.ai/v1"
 )
 def encode_image_to_base64(image_path):
@@ -701,6 +701,8 @@ def main():
                             draw_health_bars(frame, bar_x, bar_y, disp_hp, disp_mana, scale=eff_scale)
 
                             # Save UI positions and measurements for post-pass boss detection
+                            # Calculate area for boss selection
+                            area = max(1, (x2 - x1)) * max(1, (y2 - y1))
                             current_frame_ui[matched_id] = {
                                 'bar_x': bar_x,
                                 'bar_y': bar_y,
@@ -709,6 +711,7 @@ def main():
                                 'raw_scale': raw_scale,
                                 'bbox': (x1, y1, x2, y2),
                                 'full_height': full_height,
+                                'area': area,
                                 'job': job,
                             }
 
@@ -726,8 +729,8 @@ def main():
             # Determine Boss (largest hitbox) for this frame and draw Boss overlay
             boss_id = None
             if current_frame_ui:
-                # Pick the matched_id with largest full_height
-                boss_id = max(current_frame_ui.items(), key=lambda kv: kv[1].get('full_height', 0))[0]
+                # Pick the matched_id with largest area
+                boss_id = max(current_frame_ui.items(), key=lambda kv: kv[1].get('area', 0))[0]
                 boss_info = current_frame_ui.get(boss_id)
                 if boss_info:
                     bx1, by1, bx2, by2 = boss_info.get('bbox', (0, 0, 0, 0))
@@ -783,7 +786,8 @@ def main():
                         boss_title = f"Boss - {boss_job}"
                         boss_text_x = bx1 + 5
                         boss_text_y = max(20, by1 - int(90 * eff_scale))
-                        cv2.putText(frame, boss_title, (boss_text_x, boss_text_y), cv2.FONT_HERSHEY_SIMPLEX, max(0.4, 0.6 * eff_scale), (0, 215, 255), max(1, int(2 * eff_scale)))
+                        # Use a bold font for Boss label (thicker outline)
+                        cv2.putText(frame, boss_title, (boss_text_x, boss_text_y), cv2.FONT_HERSHEY_SIMPLEX, max(0.4, 0.6 * eff_scale), (0, 215, 255), max(3, int(3 * eff_scale)))
 
             # === NEW: PUBLISH REGIONS TO GLOBAL ===
             # Update the global list so the mouse callback sees the latest positions
