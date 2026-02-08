@@ -624,6 +624,10 @@ def main():
                         boss_text_y = max(20, by1 - int(90 * eff_scale))
                         cv2.putText(frame, boss_title, (boss_text_x, boss_text_y), cv2.FONT_HERSHEY_SIMPLEX, max(0.4, 0.6 * eff_scale), (0, 215, 255), max(1, int(2 * eff_scale)))
 
+            # === NEW: PUBLISH REGIONS TO GLOBAL ===
+            # Update the global list so the mouse callback sees the latest positions
+            click_regions = current_frame_regions
+            
             # Cleanup pending_seen entries that haven't been updated recently
             stale_pending = [pid for pid, info in pending_seen.items() if (time.time() - info.get('last_seen', info.get('first_seen', 0))) > pending_timeout]
             for pid in stale_pending:
