@@ -15,7 +15,7 @@ except Exception:
     yaml = None
 
 client = OpenAI(
-    api_key="APIKEY", 
+    api_key="rc_b4df6774a92819b35ccb07a5ac80134dfe40ba6f67582859cf0b406e383fe31b", 
     base_url="https://api.featherless.ai/v1"
 )
 def encode_image_to_base64(image_path):
@@ -138,6 +138,10 @@ JOB_COLORS = {
 # We need these so the mouse listener knows what's happening in the main loop
 latest_frame = None
 click_regions = []  # Will store tuples: (x1, y1, x2, y2, track_id)
+# =================== Quest Log Click/Result Globals ===================
+# For clickable quest log and result overlay
+quest_log_regions = []  # (x1, y1, x2, y2, 'main'/'side', quest_text)
+quest_result_overlay = {'show': False, 'success': None, 'quest': '', 'timestamp': 0}
 # =================== Persistent attributes ===================
 # track_id -> {'hp': HP, 'mana': Mana, 'job': job, 'bbox': (x1,y1,x2,y2), 'upper_bbox': (...), ...}
 person_attributes = {}
@@ -151,23 +155,47 @@ def draw_text_box(img, text_list, x, y, font_scale=0.6, color=(255, 255, 255), t
 
 def mouse_callback(event, x, y, flags, param):
     """Handles mouse clicks, calls AI, and shows Character Card."""
-    global latest_frame, click_regions, person_attributes
+    global latest_frame, click_regions, person_attributes, quest_log_regions, quest_result_overlay
     
-     # Trigger only on Left Mouse Button Click (LBUTTONDOWN)
+    # Trigger only on Left Mouse Button Click (LBUTTONDOWN)
     if event == cv2.EVENT_LBUTTONDOWN:
-        
-        # Check if the click (x, y) is inside any of the detected boxes
+        # 1. Check if click is in quest log region
+        for (qx1, qy1, qx2, qy2, quest_type, quest_text) in quest_log_regions:
+            if qx1 < x < qx2 and qy1 < y < qy2:
+                print(f"[DEBUG] Clicked quest box: {quest_type} quest '{quest_text}' at ({x},{y})")
+                # Take screenshot and check quest completion
+                if latest_frame is not None:
+                    import time
+                    screenshot_path = f"quest_submit_{quest_type}_{int(time.time())}.jpg"
+                    cv2.imwrite(screenshot_path, latest_frame)
+                    # Call check_quest_complete
+                    try:
+                        result = check_quest_complete(screenshot_path, quest_text)
+                    except Exception as e:
+                        print(f"Quest check error: {e}")
+                        result = False
+                    # Delete the screenshot after checking
+                    try:
+                        if os.path.exists(screenshot_path):
+                            os.remove(screenshot_path)
+                    except Exception as e:
+                        print(f"Error deleting screenshot: {e}")
+                    quest_result_overlay['show'] = True
+                    quest_result_overlay['success'] = result
+                    quest_result_overlay['quest'] = quest_text
+                    quest_result_overlay['timestamp'] = time.time()
+                return
+
+        # 2. Check if the click (x, y) is inside any of the detected boxes (character card)
         for (x1, y1, x2, y2, track_id) in click_regions:
             if x1 < x < x2 and y1 < y < y2:
                 print(f"✅ Clicked on Person ID: {track_id}. Generating AI Description")
-                
                 # --- STEP 1: USE STORED USER DATA ---
                 data = person_attributes.get(track_id)
                 if data is None: return
                 job = data['job']
                 hp = data['hp']
                 mana = data['mana']
-
                 # --- STEP 2: CALL AI ---
                 try:
                     print(f"   [Stats] Job: {job} | HP: {hp} | MP: {mana}") # Debug print
@@ -176,7 +204,6 @@ def mouse_callback(event, x, y, flags, param):
                 except Exception as e:
                     print(f"AI Error: {e}")
                     title, unique_title, desc = (str(job), "The Unknown", "AI generation failed.")
-
                 # 3. Prepare the Image (Create Card)
                 if latest_frame is not None:
                     h_img, w_img, _ = latest_frame.shape
@@ -199,25 +226,20 @@ def mouse_callback(event, x, y, flags, param):
                         x_offset = (card_width - new_w) // 2
                         y_offset = (img_area_height - new_h) // 2
                         card[y_offset:y_offset+new_h, x_offset:x_offset+new_w, :] = card_img
-
                         text_y = img_area_height + 40
                         cv2.putText(card, unique_title.strip(), (20, text_y),
                                     cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 215, 255), 2)
                         cv2.putText(card, title.strip(), (20, text_y + 40),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (150, 150, 150), 1)
-                        # Improved text wrapping for description
-                        
                         desc_lines = textwrap.wrap(desc, width=80)  # Adjust width for card
                         max_lines = 5  # Limit lines to fit in text area
                         desc_lines = desc_lines[:max_lines]
                         draw_text_box(card, desc_lines, 20, text_y + 80)
-
                         window_name = f"Card: {track_id}"
                         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
                         cv2.resizeWindow(window_name, card_width, card_height)
                         cv2.imshow(window_name, card)
                         cv2.waitKey(1)
-
                         print(f"   -> Opened Card for ID: {track_id}")
                         break  # Stop after showing the card for the first valid match
                 return # Stop checking after finding the first match
@@ -436,18 +458,30 @@ def main():
     import random
     QUEST_POOL = [
         "Talk to 3 new people",
-        "Build a working demo",
         "Eat a snack",
         "Ask a mentor for help",
-        "Submit your project",
-            "Take a group photo",
-            "Present your idea",
-            "Find a bug and fix it",
-            "Help another team",
-            "Make a new friend"
+        "Take a group photo",
+        "Help another team",
+        "Make a new friend"
         ]
     MAIN_QUEST = "Win the Hackathon"
     sidequest = random.choice(QUEST_POOL)
+
+    # Initialize quest_log_regions before main loop to avoid empty region on first click
+    global quest_log_regions
+    quest_box_w = 200
+    quest_box_h = 80
+    # Assume 1280x720 default if frame not yet available
+    default_w, default_h = 1280, 720
+    quest_box_x = default_w - quest_box_w - 20
+    quest_box_y = 20
+    quest_log_regions = []
+    main_quest_y1 = quest_box_y + 18
+    main_quest_y2 = quest_box_y + 48
+    quest_log_regions.append((quest_box_x, main_quest_y1, quest_box_x + quest_box_w, main_quest_y2, 'main', MAIN_QUEST))
+    side_quest_y1 = quest_box_y + 52
+    side_quest_y2 = quest_box_y + quest_box_h
+    quest_log_regions.append((quest_box_x, side_quest_y1, quest_box_x + quest_box_w, side_quest_y2, 'side', sidequest))
 
     """Initialize models, camera and run the detection loop."""
     parser = argparse.ArgumentParser(description='YOLOv8 RPG View')
@@ -781,6 +815,7 @@ def main():
             for pid in stale_persons:
                 person_attributes.pop(pid, None)
 
+
             # Draw Quest Log in top right (with text wrapping)
             import textwrap
             quest_box_w = 200
@@ -803,6 +838,38 @@ def main():
                 y = quest_box_y + 65 + i*18
                 if y > quest_box_y + quest_box_h - 10: break
                 cv2.putText(frame, line, (quest_box_x + 10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+
+            # Update quest_log_regions for click detection (main and side quest clickable areas)
+            quest_log_regions = []
+            # Main quest region (top half)
+            main_quest_y1 = quest_box_y + 18
+            main_quest_y2 = quest_box_y + 48
+            quest_log_regions.append((quest_box_x, main_quest_y1, quest_box_x + quest_box_w, main_quest_y2, 'main', MAIN_QUEST))
+            # Side quest region (bottom half)
+            side_quest_y1 = quest_box_y + 52
+            side_quest_y2 = quest_box_y + quest_box_h
+            quest_log_regions.append((quest_box_x, side_quest_y1, quest_box_x + quest_box_w, side_quest_y2, 'side', sidequest))
+
+            # Show quest result overlay if needed
+            import time
+            if quest_result_overlay['show']:
+                elapsed = time.time() - quest_result_overlay['timestamp']
+                if elapsed < 3.0:
+                    overlay_text = ("Quest Complete!" if quest_result_overlay['success'] else "Quest Failed!")
+                    color = (0, 255, 0) if quest_result_overlay['success'] else (0, 0, 255)
+                    msg = f"{overlay_text}"
+                    quest_name = quest_result_overlay['quest']
+                    # Draw overlay box in center
+                    overlay_w = 400
+                    overlay_h = 120
+                    ox = frame.shape[1]//2 - overlay_w//2
+                    oy = frame.shape[0]//2 - overlay_h//2
+                    cv2.rectangle(frame, (ox, oy), (ox+overlay_w, oy+overlay_h), (30, 30, 30), -1)
+                    cv2.rectangle(frame, (ox, oy), (ox+overlay_w, oy+overlay_h), color, 3)
+                    cv2.putText(frame, msg, (ox+30, oy+50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
+                    cv2.putText(frame, f"{quest_name}", (ox+30, oy+90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+                else:
+                    quest_result_overlay['show'] = False
 
             cv2.imshow("YOLOv8 RPG View", frame)
             # Correct quit logic: waitKey returns int, mask with 0xFF
