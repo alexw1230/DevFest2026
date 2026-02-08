@@ -830,26 +830,34 @@ def main():
 
             # Draw Quest Log in top right (with text wrapping)
             import textwrap
-            quest_box_w = 200
+            quest_box_w = 220
             quest_box_h = 80
-            quest_box_x = frame.shape[1] - quest_box_w - 20
-            quest_box_y = 20
+            quest_box_x = frame.shape[1] - quest_box_w - 10
+            quest_box_y = 10
             cv2.rectangle(frame, (quest_box_x, quest_box_y), (quest_box_x + quest_box_w, quest_box_y + quest_box_h), (30, 30, 60), -1)
             cv2.rectangle(frame, (quest_box_x, quest_box_y), (quest_box_x + quest_box_w, quest_box_y + quest_box_h), (200, 200, 255), 2)
             # Main Quest
             cv2.putText(frame, "Main Quest:", (quest_box_x + 10, quest_box_y + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 215, 0), 2)
-            main_lines = textwrap.wrap(MAIN_QUEST, width=20)
+            main_lines = textwrap.wrap(MAIN_QUEST, width=40)
             for i, line in enumerate(main_lines):
                 y = quest_box_y + 32 + i*18
                 if y > quest_box_y + 40: break
-                cv2.putText(frame, line, (quest_box_x + 10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+                cv2.putText(frame, line, (quest_box_x + 10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1)
             # Side Quest
             cv2.putText(frame, "Side Quest:", (quest_box_x + 10, quest_box_y + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 180), 2)
-            side_lines = textwrap.wrap(sidequest, width=20)
+            side_lines = textwrap.wrap(sidequest, width=40)
             for i, line in enumerate(side_lines):
                 y = quest_box_y + 65 + i*18
                 if y > quest_box_y + quest_box_h - 10: break
-                cv2.putText(frame, line, (quest_box_x + 10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+                cv2.putText(frame, line, (quest_box_x + 10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1)
+
+            # Regenerate sidequest only after success box has shown for 5 seconds
+            import time
+            if quest_result_overlay['show'] and quest_result_overlay['success'] and quest_result_overlay['quest'] == sidequest:
+                elapsed = time.time() - quest_result_overlay['timestamp']
+                if elapsed >= 5.0:
+                    sidequest = random.choice([q for q in QUEST_POOL if q != sidequest])
+                    quest_result_overlay['show'] = False
 
             # Update quest_log_regions for click detection (main and side quest clickable areas)
             quest_log_regions = []
@@ -865,7 +873,7 @@ def main():
             # Show quest result overlay if needed
             if quest_result_overlay['show']:
                 elapsed = time.time() - quest_result_overlay['timestamp']
-                if elapsed < 3.0:
+                if elapsed < 5.0:
                     overlay_text = ("Quest Complete!" if quest_result_overlay['success'] else "Quest Failed!")
                     color = (0, 255, 0) if quest_result_overlay['success'] else (0, 0, 255)
                     msg = f"{overlay_text}"
