@@ -1054,7 +1054,7 @@ def main():
 
             # Draw EXP Bar below quest box
             exp_bar_y = quest_box_y + quest_box_h + 10
-            exp_bar_x = quest_box_x
+            exp_bar_x = quest_box_x + 10
             draw_exp_bar(frame, exp_bar_x, exp_bar_y, current_exp, max_exp_for_level, current_level, scale=0.9)
 
             # Regenerate sidequest only after success box has shown for 5 seconds
