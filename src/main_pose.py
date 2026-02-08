@@ -15,7 +15,7 @@ except Exception:
     yaml = None
 
 client = OpenAI(
-    api_key="rc_b4df6774a92819b35ccb07a5ac80134dfe40ba6f67582859cf0b406e383fe31b", 
+    api_key="APIKEY", 
     base_url="https://api.featherless.ai/v1"
 )
 def encode_image_to_base64(image_path):
