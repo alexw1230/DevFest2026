@@ -17,7 +17,7 @@ except Exception:
     yaml = None
 
 client = OpenAI(
-    api_key="rc_b4df6774a92819b35ccb07a5ac80134dfe40ba6f67582859cf0b406e383fe31b", 
+    api_key="dumbass", 
     base_url="https://api.featherless.ai/v1"
 )
 
@@ -476,7 +476,7 @@ def main():
         "Take a group photo",
         "Make a new friend"
         ]
-    MAIN_QUEST = "Win the Hackathon"
+    MAIN_QUEST = generate_mainquest()
     sidequest = random.choice(QUEST_POOL)
 
     # Initialize quest_log_regions before main loop to avoid empty region on first click
